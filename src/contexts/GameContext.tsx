@@ -1,4 +1,6 @@
-import React, { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react";
+import { usePrivy } from "@privy-io/react-auth";
+import { api } from "@/lib/api";
 import {
   UserProfile,
   Guild,
@@ -16,6 +18,7 @@ interface GameContextType {
   walletAddress: string;
   connectWallet: () => Promise<void>;
   disconnectWallet: () => void;
+  isLoading: boolean;
 
   // User state
   user: UserProfile;
@@ -44,37 +47,63 @@ interface GameContextType {
 const GameContext = createContext<GameContextType | undefined>(undefined);
 
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [isConnected, setIsConnected] = useState(false);
+  const { login, logout, authenticated, ready, getAccessToken, user: privyUser } = usePrivy();
+  
+  const [isLoading, setIsLoading] = useState(false);
   const [walletAddress, setWalletAddress] = useState("");
   const [user, setUser] = useState<UserProfile>(defaultUser);
   const [guilds, setGuilds] = useState<Guild[]>(mockGuilds);
   const [pendingPlankReward, setPendingPlankReward] = useState(0);
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
 
-  // Mock wallet connection
-  const connectWallet = useCallback(async () => {
-    // Simulate wallet connection delay
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    
-    const mockAddress = "0x" + Math.random().toString(16).slice(2, 10) + "..." + Math.random().toString(16).slice(2, 6);
-    const fullAddress = "0x" + Array(40).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join("");
-    
-    setWalletAddress(fullAddress);
-    setIsConnected(true);
-    setUser({
-      ...defaultUser,
-      walletAddress: fullAddress,
-      username: "Warrior_" + Math.floor(Math.random() * 9999),
-      plankBalance: Math.floor(Math.random() * 100), // Start with some mock balance
-    });
-  }, []);
+  // Sync with backend when Privy auth changes
+  useEffect(() => {
+    const syncUser = async () => {
+      if (authenticated && ready) {
+        setIsLoading(true);
+        try {
+          const accessToken = await getAccessToken();
+          if (accessToken) {
+            const { user: backendUser } = await api.verifyAuth(accessToken);
+            
+            setWalletAddress(backendUser.walletAddress || "");
+            setUser({
+              ...defaultUser,
+              walletAddress: backendUser.walletAddress || "",
+              username: backendUser.username || `Warrior_${backendUser.id}`,
+              guildId: backendUser.guildId,
+              plankBalance: Number(backendUser.balancePlank) || 0,
+              auraPoints: backendUser.auraPoints || 0,
+            });
+          }
+        } catch (error) {
+          console.error("Failed to sync user:", error);
+        } finally {
+          setIsLoading(false);
+        }
+      }
+    };
 
-  const disconnectWallet = useCallback(() => {
-    setIsConnected(false);
+    syncUser();
+  }, [authenticated, ready, getAccessToken]);
+
+  // Connect wallet (opens Privy login)
+  const connectWallet = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      await login();
+    } finally {
+      setIsLoading(false);
+    }
+  }, [login]);
+
+  // Disconnect wallet
+  const disconnectWallet = useCallback(async () => {
+    await logout();
     setWalletAddress("");
     setUser(defaultUser);
     setPendingPlankReward(0);
-  }, []);
+  }, [logout]);
 
   const updateUsername = useCallback((name: string) => {
     setUser((prev) => ({ ...prev, username: name }));
@@ -215,10 +244,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   return (
     <GameContext.Provider
       value={{
-        isConnected,
+        isConnected: authenticated,
         walletAddress,
         connectWallet,
         disconnectWallet,
+        isLoading,
         user,
         updateUsername,
         guilds,
